@@ -67,6 +67,7 @@ $runTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $activeRunspace = $null
 $activeInvocation = $null
 $outputBuffer = $null
+$outputDataAddedHandler = $null
 $totalTargets = 0
 $completedTargets = 0
 
@@ -192,14 +193,6 @@ function Update-ProgressDisplay {
 }
 
 $runTimer.Add_Tick({
-    while ($outputBuffer -and $completedTargets -lt $outputBuffer.Count) {
-        $nextResult = $outputBuffer[$completedTargets]
-        $liveResults.Add($nextResult)
-        $completedTargets++
-        Update-ProgressDisplay
-        $statusText.Text = "Running... $completedTargets/$totalTargets"
-    }
-
     if (-not $activeInvocation -or -not $activeInvocation.IsCompleted) {
         return
     }
@@ -208,6 +201,11 @@ $runTimer.Add_Tick({
 
     try {
         $null = $activeRunspace.EndInvoke($activeInvocation)
+
+        while ($outputBuffer -and $liveResults.Count -lt $outputBuffer.Count) {
+            $liveResults.Add($outputBuffer[$liveResults.Count])
+        }
+
         $snapshotResults = @($liveResults)
         $completedTargets = $snapshotResults.Count
         Update-ProgressDisplay
@@ -219,12 +217,16 @@ $runTimer.Add_Tick({
         Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] GUI snapshot failed. Error=$($_.Exception.Message)"
     }
     finally {
+        if ($outputBuffer -and $outputDataAddedHandler) {
+            $outputBuffer.remove_DataAdded($outputDataAddedHandler)
+        }
         if ($activeRunspace) {
             $activeRunspace.Dispose()
         }
         $activeRunspace = $null
         $activeInvocation = $null
         $outputBuffer = $null
+        $outputDataAddedHandler = $null
         Set-RunState -IsRunning $false
     }
 })
@@ -280,6 +282,20 @@ $runButton.Add_Click({
     $inputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
     $inputBuffer.Complete()
     $outputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
+
+    $outputDataAddedHandler = [System.Management.Automation.DataAddedEventHandler]{
+        param($sender, $eventArgs)
+
+        $nextResult = $sender[$eventArgs.Index]
+        $window.Dispatcher.BeginInvoke([action]{
+            $liveResults.Add($nextResult)
+            $completedTargets = $liveResults.Count
+            Update-ProgressDisplay
+            $statusText.Text = "Running... $completedTargets/$totalTargets"
+        }) | Out-Null
+    }
+    $outputBuffer.add_DataAdded($outputDataAddedHandler)
+
     $activeInvocation = $activeRunspace.BeginInvoke($inputBuffer, $outputBuffer)
     $runTimer.Start()
 })
