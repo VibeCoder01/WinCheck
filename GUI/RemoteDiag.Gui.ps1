@@ -112,20 +112,19 @@ $runButton.Add_Click({
     Set-RunState -IsRunning $true
 
     $activeRunspace = [powershell]::Create()
-    $null = $activeRunspace
-        .AddScript({
-            param($ModulePath, $Targets, $Days, $IncludeWer, $IncludeDefender, $IncludeUpdates, $LogPath)
+    $null = $activeRunspace.AddScript({
+        param($ModulePath, $Targets, $Days, $IncludeWer, $IncludeDefender, $IncludeUpdates, $LogPath)
 
-            Import-Module $ModulePath -Force
-            Get-RDHostSnapshot -ComputerName $Targets -DaysBack $Days -IncludeWER:$IncludeWer -IncludeDefender:$IncludeDefender -IncludeUpdates:$IncludeUpdates -LogPath $LogPath
-        })
-        .AddArgument($modulePath)
-        .AddArgument($targets)
-        .AddArgument($days)
-        .AddArgument([bool]$includeWER.IsChecked)
-        .AddArgument([bool]$includeDefender.IsChecked)
-        .AddArgument([bool]$includeUpdates.IsChecked)
-        .AddArgument($logPath)
+        Import-Module $ModulePath -Force
+        Get-RDHostSnapshot -ComputerName $Targets -DaysBack $Days -IncludeWER:$IncludeWer -IncludeDefender:$IncludeDefender -IncludeUpdates:$IncludeUpdates -LogPath $LogPath
+    })
+    $null = $activeRunspace.AddArgument($modulePath)
+    $null = $activeRunspace.AddArgument($targets)
+    $null = $activeRunspace.AddArgument($days)
+    $null = $activeRunspace.AddArgument([bool]$includeWER.IsChecked)
+    $null = $activeRunspace.AddArgument([bool]$includeDefender.IsChecked)
+    $null = $activeRunspace.AddArgument([bool]$includeUpdates.IsChecked)
+    $null = $activeRunspace.AddArgument($logPath)
 
     $activeInvocation = $activeRunspace.BeginInvoke()
     $runTimer.Start()
