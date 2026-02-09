@@ -394,4 +394,13 @@ $exportCsvButton.Add_Click({
     Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI exported CSV report. Path=$path"
 })
 
-$null = $window.ShowDialog()
+$application = [System.Windows.Application]::Current
+
+if (-not $application) {
+    $application = [System.Windows.Application]::new()
+}
+
+# Prefer the application run loop for the primary GUI window to avoid
+# ShowDialog-specific startup failures seen in some host environments.
+$application.MainWindow = $window
+$null = $application.Run($window)
