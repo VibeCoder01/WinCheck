@@ -13,7 +13,7 @@ Import-Module "$PSScriptRoot/../RemoteDiag/RemoteDiag.psd1" -Force
         </Grid.RowDefinitions>
 
         <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,8">
-            <TextBlock Text="Targets (comma-separated):" VerticalAlignment="Center"/>
+            <TextBlock Text="Targets (CSV, range, or file):" VerticalAlignment="Center"/>
             <TextBox x:Name="TargetsBox" Width="400" Margin="8,0,0,0"/>
             <TextBlock Text="Days back:" VerticalAlignment="Center" Margin="12,0,0,0"/>
             <TextBox x:Name="DaysBackBox" Width="50" Text="7" Margin="6,0,0,0"/>
@@ -55,6 +55,104 @@ $runTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $runTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $activeRunspace = $null
 $activeInvocation = $null
+
+
+function Expand-TargetToken {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Token
+    )
+
+    $trimmed = $Token.Trim()
+    if (-not $trimmed) {
+        return @()
+    }
+
+    $rangeMatch = [regex]::Match($trimmed, '^(?<start>\S+)\s*(?<sep>\.\.|-)\s*(?<end>\S+)$')
+    if (-not $rangeMatch.Success) {
+        return @($trimmed)
+    }
+
+    $startName = $rangeMatch.Groups['start'].Value
+    $endName = $rangeMatch.Groups['end'].Value
+    $startMatch = [regex]::Match($startName, '^(?<prefix>.*?)(?<number>\d+)$')
+    $endMatch = [regex]::Match($endName, '^(?<prefix>.*?)(?<number>\d+)$')
+    if (-not $startMatch.Success -or -not $endMatch.Success) {
+        throw "Invalid range '$trimmed'. Both range endpoints must end with digits."
+    }
+
+    if ($startMatch.Groups['prefix'].Value -ne $endMatch.Groups['prefix'].Value) {
+        throw "Invalid range '$trimmed'. Range endpoints must share the same prefix."
+    }
+
+    $startNumber = [int]$startMatch.Groups['number'].Value
+    $endNumber = [int]$endMatch.Groups['number'].Value
+    if ($endNumber -lt $startNumber) {
+        throw "Invalid range '$trimmed'. Ending number must be greater than or equal to starting number."
+    }
+
+    $prefix = $startMatch.Groups['prefix'].Value
+    $width = [Math]::Max($startMatch.Groups['number'].Value.Length, $endMatch.Groups['number'].Value.Length)
+
+    $expanded = foreach ($number in $startNumber..$endNumber) {
+        '{0}{1}' -f $prefix, $number.ToString("D$width")
+    }
+
+    return @($expanded)
+}
+
+function Get-TargetsFromFile {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -Path $Path -PathType Leaf)) {
+        throw "Target file '$Path' does not exist."
+    }
+
+    $targets = foreach ($line in (Get-Content -Path $Path -ErrorAction Stop)) {
+        $trimmed = $line.TrimStart()
+        if (-not $trimmed) { continue }
+        if ($trimmed[0] -notmatch '[A-Za-z0-9]') { continue }
+
+        $machineName = ($trimmed -split '\s+', 2)[0]
+        if ($machineName) {
+            $machineName
+        }
+    }
+
+    return @($targets)
+}
+
+function Resolve-ComputerTargets {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RawInput
+    )
+
+    $allTargets = New-Object System.Collections.Generic.List[string]
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    $items = $RawInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    foreach ($item in $items) {
+        $isFile = ($item -match '\.[A-Za-z0-9]+$') -and (Test-Path -Path $item -PathType Leaf)
+        $resolved = if ($isFile) {
+            Get-TargetsFromFile -Path $item
+        }
+        else {
+            Expand-TargetToken -Token $item
+        }
+
+        foreach ($target in $resolved) {
+            if ($seen.Add($target)) {
+                $null = $allTargets.Add($target)
+            }
+        }
+    }
+
+    return @($allTargets)
+}
 
 function Set-RunState {
     param([bool]$IsRunning)
@@ -100,7 +198,14 @@ $runButton.Add_Click({
     Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot requested. Targets=$($targetsBox.Text)"
     $window.Dispatcher.Invoke([action]{}, 'Render')
 
-    $targets = $targetsBox.Text -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    try {
+        $targets = Resolve-ComputerTargets -RawInput $targetsBox.Text
+    }
+    catch {
+        $statusText.Text = "Target parsing error: $($_.Exception.Message)"
+        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] GUI target parse failed. Error=$($_.Exception.Message)"
+        return
+    }
     $days = 7
     [void][int]::TryParse($daysBackBox.Text, [ref]$days)
 
