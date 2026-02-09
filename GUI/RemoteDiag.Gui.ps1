@@ -3,6 +3,9 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName WindowsBase
 Import-Module "$PSScriptRoot/../RemoteDiag/RemoteDiag.psd1" -Force
 
+# Avoid WPF GPU/desktop-heap pressure issues in constrained or remote sessions.
+[System.Windows.Media.RenderOptions]::ProcessRenderMode = [System.Windows.Interop.RenderMode]::SoftwareOnly
+
 if (-not [System.Windows.Application]::Current) {
     $null = [System.Windows.Application]::new()
 }
