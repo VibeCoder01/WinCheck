@@ -1,8 +1,18 @@
+$startupLogPath = Join-Path $PSScriptRoot 'RemoteDiag.Gui.startup.log'
+
+trap {
+    $errorMessage = $_.Exception.Message
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] GUI startup failed. Error=$errorMessage"
+    if ([type]::GetType('System.Windows.MessageBox, PresentationFramework')) {
+        [System.Windows.MessageBox]::Show("RemoteDiag GUI failed to start: $errorMessage`nSee log: $startupLogPath", 'RemoteDiag Startup Error') | Out-Null
+    }
+    Write-Error "RemoteDiag GUI failed to start: $errorMessage (see $startupLogPath)"
+    break
+}
+
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
     $currentProcessPath = (Get-Process -Id $PID).Path
-    $escapedScriptPath = '"{0}"' -f $PSCommandPath
-    $escapedArgs = @($args | ForEach-Object { '"{0}"' -f ("$_".Replace('"', '""')) })
-    $argumentList = @('-NoProfile', '-STA', '-File', $escapedScriptPath) + $escapedArgs
+    $argumentList = @('-NoProfile', '-STA', '-File', $PSCommandPath) + $args
 
     Write-Warning 'RemoteDiag GUI requires an STA runspace. Relaunching in STA mode...'
     Start-Process -FilePath $currentProcessPath -ArgumentList $argumentList -WorkingDirectory (Get-Location) | Out-Null
@@ -81,6 +91,7 @@ $snapshotResults = @()
 $liveResults = [System.Collections.ObjectModel.ObservableCollection[object]]::new()
 $resultsGrid.ItemsSource = $liveResults
 $logPath = Join-Path $pwd 'RemoteDiag-Activity.log'
+Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [INFO] GUI startup initialized. Script=$PSCommandPath"
 $modulePath = Join-Path $PSScriptRoot '../RemoteDiag/RemoteDiag.psd1'
 $runTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $runTimer.Interval = [TimeSpan]::FromMilliseconds(250)
