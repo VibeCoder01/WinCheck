@@ -283,7 +283,7 @@ $runButton.Add_Click({
     $inputBuffer.Complete()
     $outputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
 
-    $outputDataAddedHandler = [System.Management.Automation.DataAddedEventHandler]{
+    $outputDataAddedHandler = {
         param($sender, $eventArgs)
 
         $nextResult = $sender[$eventArgs.Index]
