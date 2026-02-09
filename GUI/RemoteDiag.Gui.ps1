@@ -5,14 +5,18 @@ if (-not $IsWindows) {
 }
 
 trap {
-    $errorMessage = if ($_.Exception) { $_.Exception.Message } else { $_.ToString() }
-    $startupMessage = "RemoteDiag GUI failed to start."
+    $exception = $_.Exception
+    $errorMessage = if ($exception) { $exception.Message } else { $_.ToString() }
+    $startupMessage = 'RemoteDiag GUI encountered an unhandled exception.'
     if ($errorMessage) {
         $startupMessage = "$startupMessage Error: $errorMessage"
     }
     $startupMessage = "$startupMessage`nSee log: $startupLogPath"
 
-    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] GUI startup failed. Error=$errorMessage"
+    $exceptionType = if ($exception) { $exception.GetType().FullName } else { 'Unknown' }
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] Unhandled GUI exception. Type=$exceptionType Error=$errorMessage"
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] Stack=$($exception.StackTrace)"
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] Position=$($_.InvocationInfo.PositionMessage)"
 
     try {
         Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
@@ -253,6 +257,42 @@ function Update-ProgressDisplay {
     $progressText.Text = "$completedTargets/$totalTargets"
 }
 
+function Convert-ToSafeObject {
+    param([object]$InputObject)
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $safe = [ordered]@{}
+        foreach ($key in $InputObject.Keys) {
+            if ($null -eq $key) {
+                continue
+            }
+
+            $normalizedKey = [string]$key
+            if ([string]::IsNullOrWhiteSpace($normalizedKey)) {
+                continue
+            }
+
+            $safe[$normalizedKey] = Convert-ToSafeObject -InputObject $InputObject[$key]
+        }
+
+        return [pscustomobject]$safe
+    }
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $InputObject) {
+            $null = $items.Add((Convert-ToSafeObject -InputObject $item))
+        }
+        return @($items)
+    }
+
+    return $InputObject
+}
+
 $runTimer.Add_Tick({
     if (-not $activeInvocation -or -not $activeInvocation.IsCompleted) {
         return
@@ -264,7 +304,7 @@ $runTimer.Add_Tick({
         $null = $activeRunspace.EndInvoke($activeInvocation)
 
         while ($outputBuffer -and $liveResults.Count -lt $outputBuffer.Count) {
-            $liveResults.Add($outputBuffer[$liveResults.Count])
+            $liveResults.Add((Convert-ToSafeObject -InputObject $outputBuffer[$liveResults.Count]))
         }
 
         $snapshotResults = @($liveResults)
@@ -348,11 +388,20 @@ $runButton.Add_Click({
         param($sender, $eventArgs)
 
         $nextResult = $sender[$eventArgs.Index]
+        $safeResult = Convert-ToSafeObject -InputObject $nextResult
         $window.Dispatcher.BeginInvoke([action]{
-            $liveResults.Add($nextResult)
-            $completedTargets = $liveResults.Count
-            Update-ProgressDisplay
-            $statusText.Text = "Running... $completedTargets/$totalTargets"
+            try {
+                $liveResults.Add($safeResult)
+                $completedTargets = $liveResults.Count
+                Update-ProgressDisplay
+                $statusText.Text = "Running... $completedTargets/$totalTargets"
+            }
+            catch {
+                Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] UI add/render failed. Type=$($_.Exception.GetType().FullName) Error=$($_.Exception.Message)"
+                Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] ResultType=$($nextResult.GetType().FullName)"
+                Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] Result=$($nextResult | Out-String)"
+                throw
+            }
         }) | Out-Null
     }
     $outputBuffer.add_DataAdded($outputDataAddedHandler)
