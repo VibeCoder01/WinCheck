@@ -1,3 +1,14 @@
+if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
+    $currentProcessPath = (Get-Process -Id $PID).Path
+    $escapedScriptPath = '"{0}"' -f $PSCommandPath
+    $escapedArgs = @($args | ForEach-Object { '"{0}"' -f ("$_".Replace('"', '""')) })
+    $argumentList = @('-NoProfile', '-STA', '-File', $escapedScriptPath) + $escapedArgs
+
+    Write-Warning 'RemoteDiag GUI requires an STA runspace. Relaunching in STA mode...'
+    Start-Process -FilePath $currentProcessPath -ArgumentList $argumentList -WorkingDirectory (Get-Location) | Out-Null
+    exit
+}
+
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName WindowsBase
