@@ -5,12 +5,24 @@ if (-not $IsWindows) {
 }
 
 trap {
-    $errorMessage = $_.Exception.Message
-    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] GUI startup failed. Error=$errorMessage"
-    if ([type]::GetType('System.Windows.MessageBox, PresentationFramework')) {
-        [System.Windows.MessageBox]::Show("RemoteDiag GUI failed to start: $errorMessage`nSee log: $startupLogPath", 'RemoteDiag Startup Error') | Out-Null
+    $errorMessage = if ($_.Exception) { $_.Exception.Message } else { $_.ToString() }
+    $startupMessage = "RemoteDiag GUI failed to start."
+    if ($errorMessage) {
+        $startupMessage = "$startupMessage Error: $errorMessage"
     }
-    Write-Error "RemoteDiag GUI failed to start: $errorMessage (see $startupLogPath)"
+    $startupMessage = "$startupMessage`nSee log: $startupLogPath"
+
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] GUI startup failed. Error=$errorMessage"
+
+    try {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+        [System.Windows.MessageBox]::Show($startupMessage) | Out-Null
+    }
+    catch {
+        Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [WARN] Failed to display startup message box. Error=$($_.Exception.Message)"
+    }
+
+    Write-Error "$startupMessage"
     break
 }
 
