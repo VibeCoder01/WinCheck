@@ -9,6 +9,8 @@
 - `Export-RDReport`: Export output to JSON, CSV, or HTML.
 - `Compare-RDHostSnapshot`: Diff a “good” reference vs “bad” host with simple likely-cause heuristics.
 
+All commands also support `-LogPath` for comprehensive activity/result logging to a UTF-8 text file (default: temp `RemoteDiag.log`).
+
 ## MVP coverage
 
 This implementation includes:
@@ -33,6 +35,11 @@ $snapshots | Format-Table ComputerName,OSBuild,UptimeDays,LowestDiskFreePct,AppC
 $comparison = Compare-RDHostSnapshot -Reference $snapshots[0] -Difference $snapshots[1]
 $comparison.Comparison | Format-Table
 $comparison.LikelyContributors
+
+# Optional: write run activity/results to a dedicated log file.
+$logPath = './out/remotediag.log'
+$snapshots = Get-RDHostSnapshot -ComputerName PC001,PC002 -DaysBack 7 -LogPath $logPath
+$snapshots | Export-RDReport -Path ./out/snapshot.json -Format Json -LogPath $logPath
 ```
 
 To launch GUI (on Windows PowerShell host with WPF support):
