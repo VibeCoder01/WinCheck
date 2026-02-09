@@ -50,8 +50,52 @@ $statusText = $window.FindName('StatusText')
 
 $snapshotResults = @()
 $logPath = Join-Path $pwd 'RemoteDiag-Activity.log'
+$modulePath = Join-Path $PSScriptRoot '../RemoteDiag/RemoteDiag.psd1'
+$runTimer = [System.Windows.Threading.DispatcherTimer]::new()
+$runTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+$activeRunspace = $null
+$activeInvocation = $null
+
+function Set-RunState {
+    param([bool]$IsRunning)
+
+    $runButton.IsEnabled = -not $IsRunning
+    $exportJsonButton.IsEnabled = -not $IsRunning
+    $exportCsvButton.IsEnabled = -not $IsRunning
+}
+
+$runTimer.Add_Tick({
+    if (-not $activeInvocation -or -not $activeInvocation.IsCompleted) {
+        return
+    }
+
+    $runTimer.Stop()
+
+    try {
+        $snapshotResults = @($activeRunspace.EndInvoke($activeInvocation))
+        $resultsGrid.ItemsSource = $snapshotResults
+        $statusText.Text = "Completed: $($snapshotResults.Count) targets"
+        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot completed. ResultCount=$($snapshotResults.Count)"
+    }
+    catch {
+        $statusText.Text = "Error: $($_.Exception.Message)"
+        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] GUI snapshot failed. Error=$($_.Exception.Message)"
+    }
+    finally {
+        if ($activeRunspace) {
+            $activeRunspace.Dispose()
+        }
+        $activeRunspace = $null
+        $activeInvocation = $null
+        Set-RunState -IsRunning $false
+    }
+})
 
 $runButton.Add_Click({
+    if ($activeInvocation -and -not $activeInvocation.IsCompleted) {
+        return
+    }
+
     $statusText.Text = 'Running...'
     Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot requested. Targets=$($targetsBox.Text)"
     $window.Dispatcher.Invoke([action]{}, 'Render')
@@ -65,15 +109,36 @@ $runButton.Add_Click({
         return
     }
 
-    try {
-        $snapshotResults = @(Get-RDHostSnapshot -ComputerName $targets -DaysBack $days -IncludeWER:$includeWER.IsChecked -IncludeDefender:$includeDefender.IsChecked -IncludeUpdates:$includeUpdates.IsChecked -LogPath $logPath)
-        $resultsGrid.ItemsSource = $snapshotResults
-        $statusText.Text = "Completed: $($snapshotResults.Count) targets"
-        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot completed. ResultCount=$($snapshotResults.Count)"
-    }
-    catch {
-        $statusText.Text = "Error: $($_.Exception.Message)"
-        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] GUI snapshot failed. Error=$($_.Exception.Message)"
+    Set-RunState -IsRunning $true
+
+    $activeRunspace = [powershell]::Create()
+    $null = $activeRunspace
+        .AddScript({
+            param($ModulePath, $Targets, $Days, $IncludeWer, $IncludeDefender, $IncludeUpdates, $LogPath)
+
+            Import-Module $ModulePath -Force
+            Get-RDHostSnapshot -ComputerName $Targets -DaysBack $Days -IncludeWER:$IncludeWer -IncludeDefender:$IncludeDefender -IncludeUpdates:$IncludeUpdates -LogPath $LogPath
+        })
+        .AddArgument($modulePath)
+        .AddArgument($targets)
+        .AddArgument($days)
+        .AddArgument([bool]$includeWER.IsChecked)
+        .AddArgument([bool]$includeDefender.IsChecked)
+        .AddArgument([bool]$includeUpdates.IsChecked)
+        .AddArgument($logPath)
+
+    $activeInvocation = $activeRunspace.BeginInvoke()
+    $runTimer.Start()
+})
+
+$window.Add_Closing({
+    $runTimer.Stop()
+    if ($activeRunspace) {
+        try {
+            $activeRunspace.Stop()
+        }
+        catch { }
+        $activeRunspace.Dispose()
     }
 })
 
