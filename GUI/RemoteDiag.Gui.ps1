@@ -9,6 +9,7 @@ Import-Module "$PSScriptRoot/../RemoteDiag/RemoteDiag.psd1" -Force
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -29,7 +30,13 @@ Import-Module "$PSScriptRoot/../RemoteDiag/RemoteDiag.psd1" -Force
             <TextBlock x:Name="StatusText" Margin="16,4,0,0" Text="Ready"/>
         </StackPanel>
 
-        <DataGrid x:Name="ResultsGrid" Grid.Row="2" AutoGenerateColumns="True" IsReadOnly="True"/>
+        <StackPanel Orientation="Horizontal" Grid.Row="2" Margin="0,0,0,8">
+            <TextBlock Text="Progress:" VerticalAlignment="Center"/>
+            <ProgressBar x:Name="RunProgressBar" Width="320" Height="16" Margin="8,0,0,0" Minimum="0" Maximum="1" Value="0"/>
+            <TextBlock x:Name="ProgressText" Margin="8,0,0,0" VerticalAlignment="Center" Text="0/0"/>
+        </StackPanel>
+
+        <DataGrid x:Name="ResultsGrid" Grid.Row="3" AutoGenerateColumns="True" IsReadOnly="True"/>
     </Grid>
 </Window>
 "@
@@ -47,14 +54,21 @@ $exportJsonButton = $window.FindName('ExportJsonButton')
 $exportCsvButton = $window.FindName('ExportCsvButton')
 $resultsGrid = $window.FindName('ResultsGrid')
 $statusText = $window.FindName('StatusText')
+$runProgressBar = $window.FindName('RunProgressBar')
+$progressText = $window.FindName('ProgressText')
 
 $snapshotResults = @()
+$liveResults = [System.Collections.ObjectModel.ObservableCollection[object]]::new()
+$resultsGrid.ItemsSource = $liveResults
 $logPath = Join-Path $pwd 'RemoteDiag-Activity.log'
 $modulePath = Join-Path $PSScriptRoot '../RemoteDiag/RemoteDiag.psd1'
 $runTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $runTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $activeRunspace = $null
 $activeInvocation = $null
+$outputBuffer = $null
+$totalTargets = 0
+$completedTargets = 0
 
 
 function Expand-TargetToken {
@@ -162,7 +176,30 @@ function Set-RunState {
     $exportCsvButton.IsEnabled = -not $IsRunning
 }
 
+function Update-ProgressDisplay {
+    if ($totalTargets -le 0) {
+        $runProgressBar.Minimum = 0
+        $runProgressBar.Maximum = 1
+        $runProgressBar.Value = 0
+        $progressText.Text = '0/0'
+        return
+    }
+
+    $runProgressBar.Minimum = 0
+    $runProgressBar.Maximum = $totalTargets
+    $runProgressBar.Value = [Math]::Min($completedTargets, $totalTargets)
+    $progressText.Text = "$completedTargets/$totalTargets"
+}
+
 $runTimer.Add_Tick({
+    while ($outputBuffer -and $completedTargets -lt $outputBuffer.Count) {
+        $nextResult = $outputBuffer[$completedTargets]
+        $liveResults.Add($nextResult)
+        $completedTargets++
+        Update-ProgressDisplay
+        $statusText.Text = "Running... $completedTargets/$totalTargets"
+    }
+
     if (-not $activeInvocation -or -not $activeInvocation.IsCompleted) {
         return
     }
@@ -170,8 +207,10 @@ $runTimer.Add_Tick({
     $runTimer.Stop()
 
     try {
-        $snapshotResults = @($activeRunspace.EndInvoke($activeInvocation))
-        $resultsGrid.ItemsSource = $snapshotResults
+        $null = $activeRunspace.EndInvoke($activeInvocation)
+        $snapshotResults = @($liveResults)
+        $completedTargets = $snapshotResults.Count
+        Update-ProgressDisplay
         $statusText.Text = "Completed: $($snapshotResults.Count) targets"
         Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot completed. ResultCount=$($snapshotResults.Count)"
     }
@@ -185,6 +224,7 @@ $runTimer.Add_Tick({
         }
         $activeRunspace = $null
         $activeInvocation = $null
+        $outputBuffer = $null
         Set-RunState -IsRunning $false
     }
 })
@@ -214,6 +254,12 @@ $runButton.Add_Click({
         return
     }
 
+    $liveResults.Clear()
+    $snapshotResults = @()
+    $totalTargets = $targets.Count
+    $completedTargets = 0
+    Update-ProgressDisplay
+
     Set-RunState -IsRunning $true
 
     $activeRunspace = [powershell]::Create()
@@ -231,7 +277,8 @@ $runButton.Add_Click({
     $null = $activeRunspace.AddArgument([bool]$includeUpdates.IsChecked)
     $null = $activeRunspace.AddArgument($logPath)
 
-    $activeInvocation = $activeRunspace.BeginInvoke()
+    $outputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
+    $activeInvocation = $activeRunspace.BeginInvoke($null, $outputBuffer)
     $runTimer.Start()
 })
 
