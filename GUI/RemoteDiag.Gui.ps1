@@ -1,5 +1,9 @@
 $startupLogPath = Join-Path $PSScriptRoot 'RemoteDiag.Gui.startup.log'
 
+if (-not $IsWindows) {
+    throw 'RemoteDiag GUI only runs on Windows hosts with WPF support.'
+}
+
 trap {
     $errorMessage = $_.Exception.Message
     Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [FATAL] GUI startup failed. Error=$errorMessage"
@@ -12,10 +16,22 @@ trap {
 
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
     $currentProcessPath = (Get-Process -Id $PID).Path
+    if (-not $currentProcessPath -or -not (Test-Path -Path $currentProcessPath -PathType Leaf)) {
+        $currentProcessPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+    }
+    if (-not $currentProcessPath -or -not (Test-Path -Path $currentProcessPath -PathType Leaf)) {
+        $currentProcessPath = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+    }
+
+    if (-not $currentProcessPath) {
+        throw 'Unable to determine a PowerShell executable to relaunch GUI in STA mode.'
+    }
+
     $argumentList = @('-NoProfile', '-STA', '-File', $PSCommandPath) + $args
 
     Write-Warning 'RemoteDiag GUI requires an STA runspace. Relaunching in STA mode...'
-    Start-Process -FilePath $currentProcessPath -ArgumentList $argumentList -WorkingDirectory (Get-Location) | Out-Null
+    Add-Content -Path $startupLogPath -Value "$(Get-Date -Format 's') [INFO] Relaunching GUI in STA mode. Host=$currentProcessPath Args=$($argumentList -join ' ')"
+    Start-Process -FilePath $currentProcessPath -ArgumentList $argumentList -WorkingDirectory $PSScriptRoot | Out-Null
     exit
 }
 
@@ -34,7 +50,7 @@ if (-not [System.Windows.Application]::Current) {
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RemoteDiag" Height="600" Width="1000">
+        Title="RemoteDiag" Height="600" Width="1000" WindowStartupLocation="CenterScreen">
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -73,6 +89,8 @@ if (-not [System.Windows.Application]::Current) {
 
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 $window = [Windows.Markup.XamlReader]::Load($reader)
+$window.Topmost = $true
+$window.Add_ContentRendered({ $window.Topmost = $false; $window.Activate() })
 
 $targetsBox = $window.FindName('TargetsBox')
 $daysBackBox = $window.FindName('DaysBackBox')
