@@ -66,7 +66,7 @@ $runButton.Add_Click({
     }
 
     try {
-        $snapshotResults = Get-RDHostSnapshot -ComputerName $targets -DaysBack $days -IncludeWER:$includeWER.IsChecked -IncludeDefender:$includeDefender.IsChecked -IncludeUpdates:$includeUpdates.IsChecked -LogPath $logPath
+        $snapshotResults = @(Get-RDHostSnapshot -ComputerName $targets -DaysBack $days -IncludeWER:$includeWER.IsChecked -IncludeDefender:$includeDefender.IsChecked -IncludeUpdates:$includeUpdates.IsChecked -LogPath $logPath)
         $resultsGrid.ItemsSource = $snapshotResults
         $statusText.Text = "Completed: $($snapshotResults.Count) targets"
         Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot completed. ResultCount=$($snapshotResults.Count)"
