@@ -1,5 +1,11 @@
+Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName WindowsBase
 Import-Module "$PSScriptRoot/../RemoteDiag/RemoteDiag.psd1" -Force
+
+if (-not [System.Windows.Application]::Current) {
+    $null = [System.Windows.Application]::new()
+}
 
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
