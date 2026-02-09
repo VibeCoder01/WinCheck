@@ -277,8 +277,10 @@ $runButton.Add_Click({
     $null = $activeRunspace.AddArgument([bool]$includeUpdates.IsChecked)
     $null = $activeRunspace.AddArgument($logPath)
 
+    $inputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
+    $inputBuffer.Complete()
     $outputBuffer = [System.Management.Automation.PSDataCollection[psobject]]::new()
-    $activeInvocation = $activeRunspace.BeginInvoke($null, $outputBuffer)
+    $activeInvocation = $activeRunspace.BeginInvoke($inputBuffer, $outputBuffer)
     $runTimer.Start()
 })
 
