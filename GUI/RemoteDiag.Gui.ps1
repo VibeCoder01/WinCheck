@@ -49,9 +49,11 @@ $resultsGrid = $window.FindName('ResultsGrid')
 $statusText = $window.FindName('StatusText')
 
 $snapshotResults = @()
+$logPath = Join-Path $pwd 'RemoteDiag-Activity.log'
 
 $runButton.Add_Click({
     $statusText.Text = 'Running...'
+    Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot requested. Targets=$($targetsBox.Text)"
     $window.Dispatcher.Invoke([action]{}, 'Render')
 
     $targets = $targetsBox.Text -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -64,12 +66,14 @@ $runButton.Add_Click({
     }
 
     try {
-        $snapshotResults = Get-RDHostSnapshot -ComputerName $targets -DaysBack $days -IncludeWER:$includeWER.IsChecked -IncludeDefender:$includeDefender.IsChecked -IncludeUpdates:$includeUpdates.IsChecked
+        $snapshotResults = Get-RDHostSnapshot -ComputerName $targets -DaysBack $days -IncludeWER:$includeWER.IsChecked -IncludeDefender:$includeDefender.IsChecked -IncludeUpdates:$includeUpdates.IsChecked -LogPath $logPath
         $resultsGrid.ItemsSource = $snapshotResults
         $statusText.Text = "Completed: $($snapshotResults.Count) targets"
+        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI snapshot completed. ResultCount=$($snapshotResults.Count)"
     }
     catch {
         $statusText.Text = "Error: $($_.Exception.Message)"
+        Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [ERROR] GUI snapshot failed. Error=$($_.Exception.Message)"
     }
 })
 
@@ -79,8 +83,9 @@ $exportJsonButton.Add_Click({
         return
     }
     $path = Join-Path $pwd 'RemoteDiag-Snapshot.json'
-    $snapshotResults | Export-RDReport -Path $path -Format Json | Out-Null
+    $snapshotResults | Export-RDReport -Path $path -Format Json -LogPath $logPath | Out-Null
     $statusText.Text = "Exported: $path"
+    Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI exported JSON report. Path=$path"
 })
 
 $exportCsvButton.Add_Click({
@@ -89,8 +94,9 @@ $exportCsvButton.Add_Click({
         return
     }
     $path = Join-Path $pwd 'RemoteDiag-Snapshot.csv'
-    $snapshotResults | Export-RDReport -Path $path -Format Csv | Out-Null
+    $snapshotResults | Export-RDReport -Path $path -Format Csv -LogPath $logPath | Out-Null
     $statusText.Text = "Exported: $path"
+    Add-Content -Path $logPath -Value "$(Get-Date -Format 's') [INFO] GUI exported CSV report. Path=$path"
 })
 
 $null = $window.ShowDialog()

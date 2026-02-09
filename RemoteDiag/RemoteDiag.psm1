@@ -1,25 +1,58 @@
 Set-StrictMode -Version Latest
 
+$script:RDDefaultLogPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath 'RemoteDiag.log'
+
+function Write-RDLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message,
+        [ValidateSet('DEBUG', 'INFO', 'WARN', 'ERROR')]
+        [string]$Level = 'INFO',
+        [string]$LogPath
+    )
+
+    $targetPath = if ([string]::IsNullOrWhiteSpace($LogPath)) { $script:RDDefaultLogPath } else { $LogPath }
+    $parent = Split-Path -Path $targetPath -Parent
+    if ($parent -and -not (Test-Path -Path $parent)) {
+        New-Item -Path $parent -ItemType Directory -Force | Out-Null
+    }
+
+    $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fffK'), $Level, $Message
+    Add-Content -Path $targetPath -Value $line -Encoding UTF8
+}
+
 function Get-RDTransport {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential,
+        [string]$LogPath,
         [ValidateSet('Auto', 'WinRM', 'RPC')]
         [string]$Preferred = 'Auto'
     )
 
-    if ($Preferred -eq 'WinRM') { return 'WinRM' }
-    if ($Preferred -eq 'RPC') { return 'RPC' }
+    Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Transport selection started for '$ComputerName' (Preferred='$Preferred')."
+
+    if ($Preferred -eq 'WinRM') {
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Transport forced to WinRM for '$ComputerName'."
+        return 'WinRM'
+    }
+    if ($Preferred -eq 'RPC') {
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Transport forced to RPC for '$ComputerName'."
+        return 'RPC'
+    }
 
     try {
         $splat = @{ ComputerName = $ComputerName; ErrorAction = 'Stop' }
         if ($Credential) { $splat.Credential = $Credential }
         Test-WSMan @splat | Out-Null
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Transport probe succeeded via WinRM for '$ComputerName'."
         return 'WinRM'
     }
     catch {
+        Write-RDLog -LogPath $LogPath -Level 'WARN' -Message "Transport probe failed for '$ComputerName'; falling back to RPC. Error: $($_.Exception.Message)"
         return 'RPC'
     }
 }
@@ -32,7 +65,8 @@ function Invoke-RDRemote {
         [Parameter(Mandatory)]
         [scriptblock]$ScriptBlock,
         [hashtable]$ArgumentList,
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$LogPath
     )
 
     $splat = @{ ComputerName = $ComputerName; ScriptBlock = $ScriptBlock; ErrorAction = 'Stop' }
@@ -42,6 +76,7 @@ function Invoke-RDRemote {
     }
     if ($Credential) { $splat.Credential = $Credential }
 
+    Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Invoking remote command against '$ComputerName'."
     Invoke-Command @splat
 }
 
@@ -50,7 +85,8 @@ function Get-RDEventSummaryRPC {
     param(
         [Parameter(Mandatory)]
         [string]$ComputerName,
-        [datetime]$StartTime
+        [datetime]$StartTime,
+        [string]$LogPath
     )
 
     $eventMap = @{
@@ -71,6 +107,7 @@ function Get-RDEventSummaryRPC {
             $count = $null
         }
         $result[$metric] = $count
+        Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "RPC event query '$metric' for '$ComputerName' returned '$count'."
     }
 
     [pscustomobject]$result
@@ -87,12 +124,14 @@ function Get-RDHostSnapshot {
         [switch]$IncludeWER,
         [switch]$Fast,
         [System.Management.Automation.PSCredential]$Credential,
+        [string]$LogPath,
         [ValidateSet('Auto', 'WinRM', 'RPC')]
         [string]$Transport = 'Auto'
     )
 
     begin {
         $startTime = (Get-Date).AddDays(-[math]::Abs($DaysBack))
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Host snapshot run started. Targets='$($ComputerName -join ',')'; DaysBack=$DaysBack; IncludeUpdates=$IncludeUpdates; IncludeDefender=$IncludeDefender; IncludeWER=$IncludeWER; Fast=$Fast; Transport=$Transport"
     }
 
     process {
@@ -127,11 +166,13 @@ function Get-RDHostSnapshot {
             }
 
             try {
-                $selectedTransport = Get-RDTransport -ComputerName $target -Credential $Credential -Preferred $Transport
+                Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Collecting snapshot for '$target'."
+                $selectedTransport = Get-RDTransport -ComputerName $target -Credential $Credential -LogPath $LogPath -Preferred $Transport
                 $result.TransportUsed = $selectedTransport
+                Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Selected transport '$selectedTransport' for '$target'."
 
                 if ($selectedTransport -eq 'WinRM') {
-                    $remote = Invoke-RDRemote -ComputerName $target -Credential $Credential -ArgumentList @{
+                    $remote = Invoke-RDRemote -ComputerName $target -Credential $Credential -LogPath $LogPath -ArgumentList @{
                         IncludeUpdates = [bool]$IncludeUpdates
                         IncludeDefender = [bool]$IncludeDefender
                         IncludeWER = [bool]$IncludeWER
@@ -251,7 +292,7 @@ function Get-RDHostSnapshot {
                     $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $target -ErrorAction Stop
                     $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $target -ErrorAction Stop
                     $drives = Get-CimInstance -ClassName Win32_LogicalDisk -ComputerName $target -Filter "DriveType=3" -ErrorAction SilentlyContinue
-                    $events = Get-RDEventSummaryRPC -ComputerName $target -StartTime $startTime
+                    $events = Get-RDEventSummaryRPC -ComputerName $target -StartTime $startTime -LogPath $LogPath
 
                     $lowestDiskPct = $null
                     if ($drives) {
@@ -287,13 +328,19 @@ function Get-RDHostSnapshot {
                     Where-Object { $null -ne $_ } |
                     Measure-Object -Sum
                 $result.HighCrashFlag = ($totalCrashy.Sum -ge 5)
+                Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Snapshot complete for '$target'. Reachable=$($result.Reachable); LowDiskFlag=$($result.LowDiskFlag); LowRAMFlag=$($result.LowRAMFlag); HighCrashFlag=$($result.HighCrashFlag); FailureReason=$($result.FailureReason)"
             }
             catch {
                 $result.FailureReason = $_.Exception.Message
+                Write-RDLog -LogPath $LogPath -Level 'ERROR' -Message "Snapshot failed for '$target'. Error: $($result.FailureReason)"
             }
 
             [pscustomobject]$result
         }
+    }
+
+    end {
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message 'Host snapshot run finished.'
     }
 }
 
@@ -305,7 +352,8 @@ function Get-RDPerformanceSample {
         [int]$DurationSeconds = 300,
         [int]$SampleIntervalSeconds = 5,
         [string[]]$Counters,
-        [System.Management.Automation.PSCredential]$Credential
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$LogPath
     )
 
     $defaultCounters = @(
@@ -317,9 +365,11 @@ function Get-RDPerformanceSample {
 
     $counterList = if ($Counters) { $Counters } else { $defaultCounters }
     $sampleCount = [math]::Max([math]::Floor($DurationSeconds / $SampleIntervalSeconds), 1)
+    Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Performance sample run started. Targets='$($ComputerName -join ',')'; DurationSeconds=$DurationSeconds; SampleIntervalSeconds=$SampleIntervalSeconds; CounterCount=$($counterList.Count)"
 
     foreach ($target in $ComputerName) {
         try {
+            Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Collecting performance samples for '$target'."
             $splat = @{
                 Counter = $counterList
                 ComputerName = $target
@@ -360,8 +410,10 @@ function Get-RDPerformanceSample {
                 Summary = $summary
                 FailureReason = $null
             }
+            Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Performance sample complete for '$target'. Samples=$($samples.Count); SummaryRows=$($summary.Count)"
         }
         catch {
+            Write-RDLog -LogPath $LogPath -Level 'ERROR' -Message "Performance sample failed for '$target'. Error: $($_.Exception.Message)"
             [pscustomobject]@{
                 ComputerName = $target
                 DurationSeconds = $DurationSeconds
@@ -373,6 +425,8 @@ function Get-RDPerformanceSample {
             }
         }
     }
+
+    Write-RDLog -LogPath $LogPath -Level 'INFO' -Message 'Performance sample run finished.'
 }
 
 function Export-RDReport {
@@ -382,6 +436,7 @@ function Export-RDReport {
         [object]$InputObject,
         [Parameter(Mandatory)]
         [string]$Path,
+        [string]$LogPath,
         [ValidateSet('Json', 'Csv', 'Html')]
         [string]$Format = 'Json',
         [switch]$IncludeRawEvents
@@ -396,6 +451,7 @@ function Export-RDReport {
     }
 
     end {
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Export started. Format='$Format'; Path='$Path'; ItemCount=$($buffer.Count)"
         $parent = Split-Path -Path $Path -Parent
         if ($parent -and -not (Test-Path $parent)) {
             New-Item -Path $parent -ItemType Directory -Force | Out-Null
@@ -416,6 +472,7 @@ function Export-RDReport {
             }
         }
 
+        Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Export finished. Format='$Format'; Path='$Path'"
         Get-Item -Path $Path
     }
 }
@@ -426,8 +483,11 @@ function Compare-RDHostSnapshot {
         [Parameter(Mandatory)]
         [pscustomobject]$Reference,
         [Parameter(Mandatory)]
-        [pscustomobject]$Difference
+        [pscustomobject]$Difference,
+        [string]$LogPath
     )
+
+    Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Snapshot comparison started. Reference='$($Reference.ComputerName)'; Difference='$($Difference.ComputerName)'"
 
     $checks = @(
         @{ Metric = 'OSBuild'; Reference = $Reference.OSBuild; Difference = $Difference.OSBuild; Direction = 'Mismatch' }
@@ -473,12 +533,15 @@ function Compare-RDHostSnapshot {
     }
     if ($Difference.BootDegradationEvents -gt $Reference.BootDegradationEvents) { $likely += 'Boot degradation events are elevated.' }
 
-    [pscustomobject]@{
+    $comparison = [pscustomobject]@{
         ReferenceComputer = $Reference.ComputerName
         DifferenceComputer = $Difference.ComputerName
         Comparison = $rows
         LikelyContributors = $likely
     }
+
+    Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Snapshot comparison finished. WarningCount=$(($rows | Where-Object Severity -eq 'Warning').Count); LikelyContributors=$($likely.Count)"
+    $comparison
 }
 
 Export-ModuleMember -Function Get-RDHostSnapshot, Get-RDPerformanceSample, Export-RDReport, Compare-RDHostSnapshot
