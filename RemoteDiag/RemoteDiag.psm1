@@ -22,6 +22,32 @@ function Write-RDLog {
     Add-Content -Path $targetPath -Value $line -Encoding UTF8
 }
 
+function Test-RDHostReachability {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ComputerName,
+        [int]$TimeoutSeconds = 2,
+        [string]$LogPath
+    )
+
+    Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Running ping pre-check for '$ComputerName' (TimeoutSeconds=$TimeoutSeconds)."
+    try {
+        $reachable = Test-Connection -ComputerName $ComputerName -Count 1 -Quiet -TimeoutSeconds $TimeoutSeconds -ErrorAction Stop
+        if ($reachable) {
+            Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Ping pre-check succeeded for '$ComputerName'."
+            return $true
+        }
+
+        Write-RDLog -LogPath $LogPath -Level 'WARN' -Message "Ping pre-check did not receive a reply from '$ComputerName'."
+        return $false
+    }
+    catch {
+        Write-RDLog -LogPath $LogPath -Level 'WARN' -Message "Ping pre-check failed for '$ComputerName'. Error: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Get-RDTransport {
     [CmdletBinding()]
     param(
@@ -167,6 +193,13 @@ function Get-RDHostSnapshot {
 
             try {
                 Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Collecting snapshot for '$target'."
+                if (-not (Test-RDHostReachability -ComputerName $target -LogPath $LogPath)) {
+                    $result.FailureReason = 'Ping pre-check failed; host did not respond before data collection started.'
+                    Write-RDLog -LogPath $LogPath -Level 'WARN' -Message "Skipping snapshot for '$target' due to ping pre-check failure."
+                    [pscustomobject]$result
+                    continue
+                }
+
                 $selectedTransport = Get-RDTransport -ComputerName $target -Credential $Credential -LogPath $LogPath -Preferred $Transport
                 $result.TransportUsed = $selectedTransport
                 Write-RDLog -LogPath $LogPath -Level 'DEBUG' -Message "Selected transport '$selectedTransport' for '$target'."
@@ -370,6 +403,20 @@ function Get-RDPerformanceSample {
     foreach ($target in $ComputerName) {
         try {
             Write-RDLog -LogPath $LogPath -Level 'INFO' -Message "Collecting performance samples for '$target'."
+            if (-not (Test-RDHostReachability -ComputerName $target -LogPath $LogPath)) {
+                Write-RDLog -LogPath $LogPath -Level 'WARN' -Message "Skipping performance sample for '$target' due to ping pre-check failure."
+                [pscustomobject]@{
+                    ComputerName = $target
+                    DurationSeconds = $DurationSeconds
+                    SampleIntervalSeconds = $SampleIntervalSeconds
+                    Counters = $counterList
+                    Samples = @()
+                    Summary = @()
+                    FailureReason = 'Ping pre-check failed; host did not respond before performance collection started.'
+                }
+                continue
+            }
+
             $splat = @{
                 Counter = $counterList
                 ComputerName = $target
